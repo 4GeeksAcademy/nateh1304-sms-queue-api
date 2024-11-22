@@ -9,7 +9,9 @@ from flask_cors import CORS
 from utils import APIException, generate_sitemap
 from admin import setup_admin
 from models import db, User
+from database import Queue
 #from models import Person
+from sms import send_SMS
 
 app = Flask(__name__)
 app.url_map.strict_slashes = False
@@ -25,6 +27,7 @@ MIGRATE = Migrate(app, db)
 db.init_app(app)
 CORS(app)
 setup_admin(app)
+queue = Queue()
 
 # Handle/serialize errors like a JSON object
 @app.errorhandler(APIException)
@@ -36,15 +39,61 @@ def handle_invalid_usage(error):
 def sitemap():
     return generate_sitemap(app)
 
-@app.route('/user', methods=['GET'])
-def handle_hello():
+@app.route('/new', methods=['POST'])
+def add_to_queue():
+    data = request.json
+    name = data.get('name')
+    phone = data.get('phone')
+    mode = data.get('mode', 'FIFO').upper()
 
-    response_body = {
-        "msg": "Hello, this is your GET /user response "
-    }
+    if not name or not phone:
+        return jsonify({'error': 'Name and phone are required'}), 400
 
-    return jsonify(response_body), 200
+    try:
+        queue.set_mode(mode)
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
 
+    queue.enqueue({'name': name, 'phone': phone})
+    position = queue.size() 
+    
+    send_SMS(f"Hello {name}, you have been added to the queue. There are {position} people ahead of you.", phone)
+    return jsonify({'message': 'User added to the queue', 'queue_position': position}), 201
+
+
+@app.route('/next', methods=['GET'])
+def get_next():
+    if queue.size() == 0:
+        return jsonify({'message': 'The queue is empty'}), 200
+
+    next_person = queue.dequeue()
+    if next_person:
+        name = next_person['name']
+        phone = next_person['phone']
+        message = f"Hello {name}, it is now your turn."
+        return jsonify({'message': f'{name} has been processed'}), 200
+    else:
+        return jsonify({'error': 'Unable to process next person'}), 500
+
+
+# @app.route('/next', methods=['GET'])
+# def get_next():
+#     if queue.size() == 0:
+#         return jsonify({'message': 'The queue is empty'}), 200
+
+#     next_person = queue.dequeue()
+#     if next_person:
+#         name = next_person['name']
+#         phone = next_person['phone']
+#         message = f"Hello {name}, it is now your turn."
+#         return jsonify({'message': f'{name} has been processed'}), 200
+#     else:
+#         return jsonify({'error': 'Unable to process next person'}), 500
+
+@app.route('/all', methods=['GET'])
+def get_all():
+    return jsonify(queue.get_queue()), 200
+    
 # this only runs if `$ python src/app.py` is executed
 if __name__ == '__main__':
     PORT = int(os.environ.get('PORT', 3000))
